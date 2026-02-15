@@ -1,0 +1,78 @@
+name: xxx
+
+on:
+  workflow_dispatch:
+  push:
+    branches-ignore:
+      - 'main'
+
+jobs:
+  dev_ci:
+    environment: dev
+    runs-on: lg-ubuntu-latest
+    timeout-minutes: 10
+    env:
+      SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
+      SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}
+      SNOWFLAKE_PRIVATE_KEY: ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
+      PRIVATE_KEY_PASSPHRASE: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE }}
+      SNOWFLAKE_ROLE: "SEPJP_HARPASS"
+      SNOWFLAKE_WAREHOUSE: "SEPDB_DEFAULT"
+      SNOWFLAKE_DATABASE: "DEBUG_HARPASS"
+      CURRENT_USER: ${{ github.actor }}
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+
+      - name: Install Snowflake
+        run: pip install snowflake-cli-labs
+
+      - name: Create Snowflake Config
+        run: |
+          set -euxo pipefail
+          KEY_DIR="$HOME/.snowflake"
+          mkdir -p "$KEY_DIR"
+          echo "${SNOWFLAKE_PRIVATE_KEY}" > "$KEY_DIR/key.p8"
+          chmod 600 "$KEY_DIR/key.p8"
+
+          cat > $KEY_DIR/config.toml << EOF
+          [connections.default]
+          account = "${SNOWFLAKE_ACCOUNT}"
+          user = "${SNOWFLAKE_USER}"
+          authenticator = "SNOWFLAKE_JWT"
+          private_key_path = "$KEY_DIR/key.p8"
+          private_key_passphrase = "${PRIVATE_KEY_PASSPHRASE}"
+          role = "${SNOWFLAKE_ROLE}"
+          database = "${SNOWFLAKE_DATABASE}"
+          schema = ""
+          EOF
+          chmod 0600 "$KEY_DIR/config.toml"
+
+      - name: Get branch
+        id: branch
+        run: |
+          set -euxo pipefail
+          echo "name=${GITHUB_REF#refs/heads/}" >> $GITHUB_OUTPUT
+
+      - name: Fetch diff
+        run: |
+          set -euxo pipefail
+          REPO_NAME="${SNOWFLAKE_DATABASE}.GIT_SYNC.\"xxx\""
+          snow git fetch "${REPO_NAME}"
+
+      - name: Deploy scripts to DEV
+        run: |
+          set -euxo pipefail
+          TARGET_FILES=$(find src -name "*.sql")
+          for FILE_PATH in $TARGET_FILES; do
+            SNOW_GIT_PATH="@${SNOWFLAKE_DATABASE}.GIT_SYNC.\"xxx\"/branches/${{ steps.branch.outputs.name }}/$FILE_PATH"
+
+            snow git execute "$SNOW_GIT_PATH" \
+              --database "${SNOWFLAKE_DATABASE}" \
+              --schema "xxx" \
+              --variable "SNOWFLAKE_DATABASE='${SNOWFLAKE_DATABASE}'" \
+              --variable "SNOWFLAKE_SCHEMA='xxx'" \
+              --variable "GIT_BRANCH='${{ steps.branch.outputs.name }}'"
+          done
+
